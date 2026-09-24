@@ -2,6 +2,7 @@ import requests
 from urllib.parse import urlsplit, urljoin
 from bs4 import BeautifulSoup, Tag
 from typing import TypedDict
+from time import sleep
 
 
 class PageData(TypedDict):
@@ -77,16 +78,16 @@ def get_images_from_html(html: str, base_url: str) -> list[str]:
 
     return images
 
-def extract_page_data(html: str, page_url: str) -> dict[str, str | list[str] ]:
-    return {
-        "url": page_url,
-        "heading": get_heading_from_html(html),
-        "first_paragraph": get_first_paragraph_from_html(html),
-        "outgoing_links": get_urls_from_html(html, page_url),
-        "image_urls": get_images_from_html(html, page_url),
-    }
+def extract_page_data(html: str, page_url: str) -> PageData:
+    return PageData(
+        url=page_url,
+        heading=get_heading_from_html(html),
+        first_paragraph=get_first_paragraph_from_html(html),
+        outgoing_links=get_urls_from_html(html, page_url),
+        image_urls=get_images_from_html(html, page_url),
+    )
 
-def get_html(url: str) -> str | Exception:
+def get_html(url: str) -> str:
     response = requests.get(url, headers={"User-Agent": "BootCrawler/1.0"})
     if response.status_code >= 400:
         raise Exception(f"Failed to fetch {url}: {response.status_code} {response.reason}") 
@@ -95,3 +96,30 @@ def get_html(url: str) -> str | Exception:
     elif not response.text:
         raise Exception(f"Empty response for {url}")
     return response.text
+
+def crawl_page(base_url: str, current_url: str = "", page_data: dict[str, PageData] = {}) -> dict[str, PageData]:
+    #sleep(1)  # Delay to avoid overwhelming the server
+    if base_url not in current_url:
+        print(current_url, base_url)
+        print("Hi")
+        return page_data
+
+    normalized_url = normalize_url(current_url)
+    if normalized_url in page_data:
+        print("Bye")
+        return page_data
+
+    print(f"crawling: {current_url}")
+    try:
+        html = get_html(current_url)
+    except Exception as e:
+        print(f"Error fetching {current_url}: {e}")
+        return page_data
+
+    page_data[normalized_url] = extract_page_data(html, current_url)
+
+    for link in page_data[normalized_url]["outgoing_links"]:
+        print(f"# found link: {link}")
+        page_data = crawl_page(base_url, link, page_data)
+    
+    return page_data
