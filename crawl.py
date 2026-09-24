@@ -1,3 +1,4 @@
+import requests
 from urllib.parse import urlsplit, urljoin
 from bs4 import BeautifulSoup, Tag
 from typing import TypedDict
@@ -84,3 +85,13 @@ def extract_page_data(html: str, page_url: str) -> dict[str, str | list[str] ]:
         "outgoing_links": get_urls_from_html(html, page_url),
         "image_urls": get_images_from_html(html, page_url),
     }
+
+def get_html(url: str) -> str | Exception:
+    response = requests.get(url, headers={"User-Agent": "BootCrawler/1.0"})
+    if response.status_code >= 400:
+        raise Exception(f"Failed to fetch {url}: {response.status_code} {response.reason}") 
+    elif not response.headers.get("Content-Type", "").startswith("text/html"):
+        raise Exception(f"Unexpected content type for {url}: {response.headers.get('Content-Type', '')}")
+    elif not response.text:
+        raise Exception(f"Empty response for {url}")
+    return response.text
