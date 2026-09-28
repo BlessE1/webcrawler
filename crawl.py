@@ -3,7 +3,8 @@ from urllib.parse import urlsplit, urljoin
 from bs4 import BeautifulSoup, Tag
 from typing import TypedDict
 from time import sleep
-
+import asyncio
+import aiohttp
 
 class PageData(TypedDict):
     url: str
@@ -11,6 +12,86 @@ class PageData(TypedDict):
     first_paragraph: str
     outgoing_links: list[str]
     image_urls: list[str]
+
+class AsyncCrawler():
+    def __init__(self, base_url: str, max_concurrency: int):
+        self.base_url = base_url
+        self.base_domain = urlsplit(base_url).netloc
+        self.page_data: dict[str, PageData] = {}
+        self.visited: set[str] = set()
+        self.lock = asyncio.Lock()
+        self.max_concurrency = max_concurrency
+        self.semaphore = asyncio.Semaphore(max_concurrency)
+        self.session: aiohttp.ClientSession | None = None
+
+    # Open and close the aiohttp session using async context manager
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.session.close()
+
+    async def add_page_visit(self, normalised_url: str):
+        async with self.lock:
+            if normalised_url in self.visited:
+                return False
+            
+            self.visited.add(normalised_url)
+            return True
+
+    async def get_html(self, url: str) -> str:
+        #print(f"Fetching HTML for: {url}")
+        async with self.session.get(url, headers={"User-Agent": "BootCrawler/1.0"}) as response:
+            if response.status >= 400:
+                raise Exception(f"Failed to fetch {url}: {response.status} {response.reason}") 
+            elif not response.headers.get("Content-Type", "").startswith("text/html"):
+                raise Exception(f"Unexpected content type for {url}: {response.headers.get('Content-Type', '')}")
+            elif not await response.text():
+                raise Exception(f"Empty response for {url}")
+
+            #print(f"Successfully fetched {url} with status {response.status}")
+            return await response.text() 
+
+    async def crawl_page(self, base_url: str, current_url: str = "", page_data: dict[str, PageData] = {}) -> dict[str, PageData]:
+        #print(f"Crawling: {current_url}")
+        await asyncio.sleep(1)  # Delay to avoid overwhelming the server
+        new_page = await self.add_page_visit(normalize_url(current_url))
+        if not new_page:
+            #print(f"Already visited: {current_url}")
+            return page_data
+
+        if base_url not in current_url:
+            #print(f"Skipping external link: {current_url}")
+            return page_data
+
+        async with self.semaphore:
+            #print(f"Fetching: {current_url}")
+            try:
+                html = await self.get_html(current_url)
+                #print(f"Fetched: {current_url}")
+            except Exception as e:
+                #print(f"Error fetching {current_url}: {e}")
+                return page_data
+
+            async with self.lock:
+                page_data[normalize_url(current_url)] = extract_page_data(html, current_url)
+
+            tasks = []
+            for link in page_data[normalize_url(current_url)]["outgoing_links"]:
+                #print(f"Found link: {link}")
+                tasks.append(asyncio.create_task(self.crawl_page(base_url, link, page_data)))
+
+            await asyncio.gather(*tasks)
+
+            return page_data
+
+    async def crawl(self) -> dict[str, PageData]:
+        return await self.crawl_page(self.base_url, self.base_url, self.page_data)
+
+async def crawl_site_async(base_url: str, max_concurrency: int) -> dict[str, PageData]:
+    async with AsyncCrawler(base_url, max_concurrency) as crawler:
+        return await crawler.crawl()
 
 def normalize_url(url: str) -> str:
     if not url:
@@ -87,39 +168,3 @@ def extract_page_data(html: str, page_url: str) -> PageData:
         image_urls=get_images_from_html(html, page_url),
     )
 
-def get_html(url: str) -> str:
-    response = requests.get(url, headers={"User-Agent": "BootCrawler/1.0"})
-    if response.status_code >= 400:
-        raise Exception(f"Failed to fetch {url}: {response.status_code} {response.reason}") 
-    elif not response.headers.get("Content-Type", "").startswith("text/html"):
-        raise Exception(f"Unexpected content type for {url}: {response.headers.get('Content-Type', '')}")
-    elif not response.text:
-        raise Exception(f"Empty response for {url}")
-    return response.text
-
-def crawl_page(base_url: str, current_url: str = "", page_data: dict[str, PageData] = {}) -> dict[str, PageData]:
-    #sleep(1)  # Delay to avoid overwhelming the server
-    if base_url not in current_url:
-        print(current_url, base_url)
-        print("Hi")
-        return page_data
-
-    normalized_url = normalize_url(current_url)
-    if normalized_url in page_data:
-        print("Bye")
-        return page_data
-
-    print(f"crawling: {current_url}")
-    try:
-        html = get_html(current_url)
-    except Exception as e:
-        print(f"Error fetching {current_url}: {e}")
-        return page_data
-
-    page_data[normalized_url] = extract_page_data(html, current_url)
-
-    for link in page_data[normalized_url]["outgoing_links"]:
-        print(f"# found link: {link}")
-        page_data = crawl_page(base_url, link, page_data)
-    
-    return page_data
