@@ -14,7 +14,7 @@ class PageData(TypedDict):
     image_urls: list[str]
 
 class AsyncCrawler():
-    def __init__(self, base_url: str, max_concurrency: int):
+    def __init__(self, base_url: str, max_concurrency: int, max_pages: int):
         self.base_url = base_url
         self.base_domain = urlsplit(base_url).netloc
         self.page_data: dict[str, PageData] = {}
@@ -23,6 +23,9 @@ class AsyncCrawler():
         self.max_concurrency = max_concurrency
         self.semaphore = asyncio.Semaphore(max_concurrency)
         self.session: aiohttp.ClientSession | None = None
+        self.max_pages = max_pages
+        self.should_stop = False
+        self.all_tasks: set[asyncio.Task] = set()
 
     # Open and close the aiohttp session using async context manager
     async def __aenter__(self):
@@ -33,6 +36,16 @@ class AsyncCrawler():
         await self.session.close()
 
     async def add_page_visit(self, normalised_url: str):
+        if self.should_stop:
+            return False
+
+        #print(len(self.visited))
+        if len(self.visited) >= self.max_pages:
+            self.should_stop = True
+            print(f"Reached maximum number of pages to crawl")
+            await asyncio.gather(*[task for task in self.all_tasks if task != asyncio.current_task()], return_exceptions=True)  # Wait for all tasks to finish
+            return False
+        
         async with self.lock:
             if normalised_url in self.visited:
                 return False
@@ -54,15 +67,21 @@ class AsyncCrawler():
             return await response.text() 
 
     async def crawl_page(self, base_url: str, current_url: str = "", page_data: dict[str, PageData] = {}) -> dict[str, PageData]:
-        #print(f"Crawling: {current_url}")
-        await asyncio.sleep(1)  # Delay to avoid overwhelming the server
+        print(f"Crawling: {current_url}")
+        #await asyncio.sleep(1)  # Delay to avoid overwhelming the server
+        if self.should_stop:
+            return page_data
+        
+        if base_url not in current_url:
+            #print(f"Skipping external link: {current_url}")
+            return page_data
+
+        if not current_url:
+            current_url = base_url
+
         new_page = await self.add_page_visit(normalize_url(current_url))
         if not new_page:
             #print(f"Already visited: {current_url}")
-            return page_data
-
-        if base_url not in current_url:
-            #print(f"Skipping external link: {current_url}")
             return page_data
 
         async with self.semaphore:
@@ -80,7 +99,10 @@ class AsyncCrawler():
             tasks = []
             for link in page_data[normalize_url(current_url)]["outgoing_links"]:
                 #print(f"Found link: {link}")
-                tasks.append(asyncio.create_task(self.crawl_page(base_url, link, page_data)))
+                task = asyncio.create_task(self.crawl_page(base_url, link, page_data))
+                self.all_tasks.add(task)
+                tasks.append(task)
+                task.add_done_callback(self.all_tasks.discard)
 
             await asyncio.gather(*tasks)
 
@@ -89,8 +111,8 @@ class AsyncCrawler():
     async def crawl(self) -> dict[str, PageData]:
         return await self.crawl_page(self.base_url, self.base_url, self.page_data)
 
-async def crawl_site_async(base_url: str, max_concurrency: int) -> dict[str, PageData]:
-    async with AsyncCrawler(base_url, max_concurrency) as crawler:
+async def crawl_site_async(base_url: str, max_concurrency: int, max_pages: int) -> dict[str, PageData]:
+    async with AsyncCrawler(base_url, max_concurrency, max_pages) as crawler:
         return await crawler.crawl()
 
 def normalize_url(url: str) -> str:
