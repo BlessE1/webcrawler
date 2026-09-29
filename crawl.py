@@ -67,7 +67,7 @@ class AsyncCrawler():
             return await response.text() 
 
     async def crawl_page(self, base_url: str, current_url: str = "", page_data: dict[str, PageData] = {}) -> dict[str, PageData]:
-        print(f"Crawling: {current_url}")
+        #print(f"Crawling: {current_url}")
         #await asyncio.sleep(1)  # Delay to avoid overwhelming the server
         if self.should_stop:
             return page_data
